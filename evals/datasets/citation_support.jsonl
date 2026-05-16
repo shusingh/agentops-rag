@@ -1,0 +1,2 @@
+{"id":"case_001","tenant_id":"demo","question":"Which document supports audit logging requirements?","expected_answer_contains":["audit logging"],"expected_citation_doc_ids":["doc_audit_logging_policy"],"should_refuse":false}
+

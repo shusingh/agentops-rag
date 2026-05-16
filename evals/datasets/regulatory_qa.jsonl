@@ -1,0 +1,2 @@
+{"id":"case_001","tenant_id":"demo","question":"What does the marketplace policy require for seller reviews?","expected_answer_contains":["seller reviews"],"expected_citation_doc_ids":["doc_marketplace_policy"],"should_refuse":false}
+
