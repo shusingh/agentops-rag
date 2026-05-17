@@ -48,13 +48,20 @@ flowchart LR
 ## Quickstart
 
 ```bash
-cd D:/Code/agentops-rag
+git clone https://github.com/shusingh/agentops-rag.git
+cd agentops-rag
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+source .venv/bin/activate
 make setup
 make test
 make eval
 make benchmark
+```
+
+On Windows PowerShell, activate the environment with:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
 ```
 
 Start local dependencies when Docker is available:
