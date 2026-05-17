@@ -1,49 +1,80 @@
 # AgentOps RAG
 
-AgentOps RAG is a production-style agentic retrieval platform focused on the infrastructure around LLM agents: evals, traces, retries, dead-letter queues, tenant isolation, rate limits, failure recovery, benchmarks, and deployment discipline.
+AgentOps RAG is a production-style reference implementation for agentic retrieval systems.
 
-This is intentionally not a chatbot-first RAG demo. It is a systems project for showing how an AI application behaves when evidence is missing, answers are unsupported, ingestion fails, tenants must be isolated, and expensive endpoints need operational controls.
+The project focuses on the operational contracts around RAG: tenant isolation, async ingestion, dead-letter queue recovery, citation-grounded answers, evals, traces, rate limits, benchmarks, and documented failure modes.
 
-## Why This Is Not A RAG Demo
+## What This Project Demonstrates
 
-Most RAG demos stop at upload, embed, retrieve, answer. AgentOps RAG puts the production surface area first:
+Most retrieval examples focus on the happy path: upload, embed, retrieve, answer. AgentOps RAG models the system behavior around that path:
 
-- JWT tenant isolation at API and retrieval boundaries
-- async ingestion with Redis Streams and DLQ replay
-- hybrid BM25/vector retrieval with score fusion
-- explicit planner, retriever, critic, and finalizer stages
-- citation-grounded answers and evidence-based refusals
-- JSONL eval harness with reports
-- OpenTelemetry spans for agent and ingestion workflows
+- JWT-based tenant isolation at API and retrieval boundaries
+- Async document ingestion with Redis Streams and DLQ replay
+- Hybrid BM25/vector retrieval with score fusion
+- Explicit planner, retriever, critic, and finalizer stages
+- Citation-grounded answers and evidence-based refusals
+- JSONL eval harness with generated reports
+- OpenTelemetry spans across API, ingestion, retrieval, and agent workflows
 - Redis Lua sliding-window rate limiting
-- benchmark reports and documented failure modes
+- Benchmark reports and documented operational failure cases
+
+## Design Goals
+
+- Make unsupported answers fail visibly instead of returning confident but weakly grounded text.
+- Keep tenant boundaries enforceable in API routes, retrieval, and admin replay flows.
+- Treat ingestion as an async workflow with observable failure and replay semantics.
+- Make evals, traces, and benchmarks part of the development loop.
+- Keep agent orchestration explicit enough that the infrastructure decisions are easy to inspect.
+
+## Non-goals
+
+- This is not a polished chat UI.
+- This is not a framework wrapper around LangChain or LangGraph.
+- This is not a managed production deployment.
+- This does not include a real tenant onboarding flow or hardened secrets management.
 
 ## Architecture
+
+### Ingestion path
 
 ```mermaid
 flowchart LR
   Client["Client"] --> API["FastAPI API"]
   API --> Auth["JWT Auth"]
-  Auth --> Tenant["Tenant Isolation"]
-  Tenant --> Docs["Document Upload"]
+  Auth --> Docs["Document Upload"]
   Docs --> Queue["Redis Ingestion Stream"]
   Queue --> Worker["Ingestion Worker"]
   Worker --> Chunker["Chunker"]
   Chunker --> Search["OpenSearch BM25 + Vector Index"]
   Worker --> Meta["Postgres Metadata"]
   Worker --> DLQ["Dead-Letter Queue"]
-  Tenant --> Ask["Ask Endpoint"]
-  Ask --> RateLimit["Redis Rate Limiter"]
+```
+
+### Ask path
+
+```mermaid
+flowchart LR
+  Client["Client"] --> API["FastAPI API"]
+  API --> Auth["JWT Auth"]
+  Auth --> Tenant["Tenant Isolation"]
+  Tenant --> RateLimit["Redis Rate Limiter"]
   RateLimit --> Agent["Agent Runtime"]
   Agent --> Planner["Planner"]
   Agent --> Retriever["Retriever Tool"]
-  Retriever --> Search
+  Retriever --> Search["OpenSearch BM25 + Vector Index"]
   Agent --> Critic["Citation/Coverage Critic"]
   Agent --> Finalizer["Finalizer"]
   Agent --> Traces["OpenTelemetry Traces"]
   Eval["Eval Runner"] --> Agent
   Bench["Benchmark Script"] --> Agent
 ```
+
+## Prerequisites
+
+- Python 3.11+
+- Docker and Docker Compose
+- Make
+- Git
 
 ## Quickstart
 
@@ -53,22 +84,18 @@ cd agentops-rag
 python -m venv .venv
 source .venv/bin/activate
 make setup
+make docker-up
+make seed
 make test
 make eval
 make benchmark
+make dev
 ```
 
 On Windows PowerShell, activate the environment with:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-```
-
-Start local dependencies when Docker is available:
-
-```bash
-make docker-up
-make dev
 ```
 
 Health check:
@@ -126,16 +153,16 @@ POST /evals/run
 
 The runtime is explicit Python orchestration:
 
-1. Planner returns structured action: retrieve, refuse, or ask a clarifying question.
+1. Planner returns a structured action: retrieve, refuse, or ask a clarifying question.
 2. Retriever runs tenant-filtered hybrid retrieval.
 3. Critic checks citation coverage and evidence support.
-4. Finalizer returns either a citation-grounded answer or refusal.
+4. Finalizer returns either a citation-grounded answer or a refusal.
 
-The code avoids LangChain/LangGraph so the infrastructure decisions are visible.
+The code avoids hiding these steps behind a graph framework so the control flow, state boundaries, and failure behavior stay visible.
 
-## Eval Harness
+## Evaluation and Observability
 
-Run:
+Run evals with:
 
 ```bash
 make eval
@@ -148,11 +175,9 @@ evals/expected/latest_report.json
 evals/expected/latest_report.md
 ```
 
-Metrics include answer contains score, citation precision, citation recall, refusal accuracy, unsupported claim rate, p50 latency, and p95 latency.
+Eval metrics include answer containment, citation precision, citation recall, refusal accuracy, unsupported claim rate, p50 latency, and p95 latency.
 
-## Tracing
-
-OpenTelemetry traces HTTP requests, auth validation, document upload, ingestion enqueue, ingestion jobs, chunking, OpenSearch indexing, DLQ writes/replays, retrieval, score fusion, model calls, critic decisions, and finalization.
+OpenTelemetry traces HTTP requests, auth validation, document upload, ingestion enqueue, ingestion jobs, chunking, OpenSearch indexing, DLQ writes and replays, retrieval, score fusion, model calls, critic decisions, and finalization.
 
 Local traces are exported to the console by default:
 
@@ -166,14 +191,14 @@ Every `/ask` response includes a `trace_id`.
 
 ## Tenant Isolation
 
-Tenant ID comes from JWT claims, not request bodies. Tests prove:
+Tenant ID comes from JWT claims, not request bodies. Tests cover:
 
 - tenant A cannot list tenant B documents
 - tenant A cannot retrieve tenant B chunks
 - tenant A cannot replay tenant B DLQ jobs
 - request-body tenant IDs do not override JWT tenant IDs
 
-## Ingestion And DLQ
+## Ingestion and DLQ
 
 Document ingestion is asynchronous by design:
 
@@ -182,6 +207,8 @@ Document ingestion is asynchronous by design:
 3. Worker chunks and indexes content.
 4. Worker marks the document indexed.
 5. Failures are written to the DLQ with stage, retry count, tenant ID, and document ID.
+
+This keeps ingestion failures observable and replayable instead of coupling every failure to the upload request.
 
 ## Rate Limiting
 
@@ -212,7 +239,7 @@ The benchmark measures throughput, p50 latency, p95 latency, failure rate, refus
 
 ## Failure Cases
 
-The `failure_cases/` directory documents realistic operational failures:
+The `failure_cases/` directory documents operational failures:
 
 - bad retrieval
 - unsupported answer
@@ -224,7 +251,28 @@ The `failure_cases/` directory documents realistic operational failures:
 
 Each case explains detection, trace/eval signals, local reproduction, and mitigation.
 
-## What I Would Do Next In Production
+## Repository Structure
+
+```text
+app/
+  agents/        planner, retriever, critic, and finalizer runtime
+  api/           FastAPI routes
+  auth/          JWT helpers and tenant claim handling
+  db/            database setup and migrations
+  evals/         eval scoring and report generation
+  ingestion/     document ingestion and chunking
+  rate_limit/    Redis Lua sliding-window limiter
+  retrieval/     OpenSearch retrieval and score fusion
+  telemetry/     OpenTelemetry setup
+  tenants/       tenant isolation helpers
+  workers/       async ingestion worker
+evals/           JSONL datasets and expected reports
+failure_cases/   documented operational failure scenarios
+scripts/         seed, eval, and benchmark entry points
+tests/           unit and integration tests
+```
+
+## Production Hardening Roadmap
 
 - Replace local Postgres, Redis, and OpenSearch with managed services.
 - Add migration tooling with Alembic.
